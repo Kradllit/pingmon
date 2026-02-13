@@ -46,9 +46,11 @@ def run_ping(host: str) -> float | None:
 
 # ── Sparkline ────────────────────────────────────────────────────────────────
 
-def build_sparkline(history: deque) -> Text:
+def build_sparkline(history: deque, display_width: int = HISTORY_SIZE) -> Text:
     """Build a colored sparkline Text from the latency history."""
     values = list(history)
+    # Show only the most recent entries that fit
+    values = values[-display_width:]
     latencies = [v for v in values if v is not None]
     max_val = max(latencies) if latencies else 1.0
     max_val = max(max_val, 5.0)
@@ -66,7 +68,7 @@ def build_sparkline(history: deque) -> Text:
             else:
                 spark.append(char, style="cyan")
 
-    pad = HISTORY_SIZE - len(values)
+    pad = display_width - len(values)
     if pad > 0:
         spark = Text(" " * pad) + spark
 
@@ -134,24 +136,28 @@ def build_vitals_line(
     mem: object,
     io_read_rate: float,
     io_write_rate: float,
+    wide: bool = True,
 ) -> Text:
-    """Build the system vitals line."""
+    """Build the system vitals line(s). Stacks vertically when not wide."""
+    sep = " │ " if wide else "\n "
+
     line = Text()
 
-    # CPU — "CPU  12%" fixed 8 chars + sparkline 10 chars
+    # CPU
     line.append(" CPU ", style="dim")
     line.append(f"{cpu_pct:3.0f}%", style=cpu_color(cpu_pct))
+    line.append("  ")
     line.append(build_vitals_sparkline(cpu_hist, cpu_max))
 
-    line.append(" │ ", style="dim")
+    line.append(sep, style="dim")
 
-    # Memory — "MEM 82%"
+    # Memory
     line.append("MEM ", style="dim")
     line.append(f"{mem.percent:2.0f}%", style=mem_color(mem.percent))
 
-    line.append(" │ ", style="dim")
+    line.append(sep, style="dim")
 
-    # IO — "IO ▲200K ▼17K/s"
+    # IO
     line.append("IO ", style="dim")
     line.append(f"▲{format_bytes(io_read_rate)}", style="cyan")
     line.append(f" ▼{format_bytes(io_write_rate)}", style="magenta")
@@ -162,6 +168,15 @@ def build_vitals_line(
 
 # ── Panel ────────────────────────────────────────────────────────────────────
 
+def get_panel_width() -> int:
+    """Get panel width based on terminal size."""
+    try:
+        term_width = os.get_terminal_size().columns
+    except OSError:
+        term_width = 80
+    return min(term_width, PANEL_WIDTH)
+
+
 def build_panel(host: str, history: deque, vitals_line: Text | None = None) -> Panel:
     """Build the status panel."""
     values = list(history)
@@ -169,8 +184,12 @@ def build_panel(host: str, history: deque, vitals_line: Text | None = None) -> P
     total = len(values)
     alert = drops > 0
     border = "red" if alert else "green"
+    width = get_panel_width()
 
-    # Ping line
+    # Ping line — icon(3) + latency(9) + sparkline(?) + gap(3) + loss(9) = inner
+    inner_width = width - 4
+    spark_width = max(inner_width - 24, 8)
+
     content = Text()
     if alert:
         content.append(" ⚠ ", style="bold yellow")
@@ -185,7 +204,7 @@ def build_panel(host: str, history: deque, vitals_line: Text | None = None) -> P
     else:
         content.append("timeout  ", style="bold red")
 
-    content.append(build_sparkline(history))
+    content.append(build_sparkline(history, display_width=spark_width))
 
     content.append("   ")
     if alert:
@@ -201,8 +220,7 @@ def build_panel(host: str, history: deque, vitals_line: Text | None = None) -> P
 
     # Add vitals line with horizontal divider
     if vitals_line is not None:
-        # Panel inner width = total - 2 (borders) - 2 (padding)
-        divider_width = PANEL_WIDTH - 4
+        divider_width = width - 4
         content.append("\n")
         content.append("─" * divider_width, style="dim")
         content.append("\n")
@@ -214,7 +232,7 @@ def build_panel(host: str, history: deque, vitals_line: Text | None = None) -> P
         title=host,
         title_align="left",
         border_style=border,
-        width=PANEL_WIDTH,
+        width=width,
     )
 
 
@@ -271,10 +289,12 @@ def main():
                 # Memory
                 mem = psutil.virtual_memory()
 
+                wide = get_panel_width() >= PANEL_WIDTH
                 vitals = build_vitals_line(
                     cpu_pct, cpu_hist, cpu_max,
                     mem,
                     io_read_rate, io_write_rate,
+                    wide=wide,
                 )
                 live.update(build_panel(args.host, history, vitals))
 
@@ -286,9 +306,11 @@ def main():
         from rich.console import Console
         mem = psutil.virtual_memory()
         cpu_pct = cpu_hist[-1] if cpu_hist else 0
+        wide = get_panel_width() >= PANEL_WIDTH
         vitals = build_vitals_line(
             cpu_pct, cpu_hist, cpu_max,
             mem, 0, 0,
+            wide=wide,
         )
         Console().print(build_panel(args.host, history, vitals))
 
